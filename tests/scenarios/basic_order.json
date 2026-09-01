@@ -1,0 +1,28 @@
+{
+  "test_id": "TC01",
+  "name": "Basic Order Flow",
+  "purpose": "Verify internal, send, and receive event generation and causal vector clock propagation across P1 -> P2 -> P3 -> P1.",
+  "initial_state": {
+    "P1": [0, 0, 0, 0],
+    "P2": [0, 0, 0, 0],
+    "P3": [0, 0, 0, 0],
+    "P4": [0, 0, 0, 0]
+  },
+  "actions": [
+    "P1 creates Order #101 (INTERNAL)",
+    "P1 sends ORDER_CREATED to P2 (SEND)",
+    "P2 receives ORDER_CREATED (RECEIVE)",
+    "P2 accepts and starts preparation (INTERNAL)",
+    "P2 sends FOOD_READY to P3 (SEND)",
+    "P3 receives FOOD_READY (RECEIVE)",
+    "P3 picks up order (INTERNAL)",
+    "P3 sends ORDER_DELIVERED to P1 (SEND)",
+    "P1 receives ORDER_DELIVERED (RECEIVE)"
+  ],
+  "expected_result": {
+    "order_status": "DELIVERED",
+    "causal_chain": "E_P1_create -> E_P1_send -> E_P2_recv -> E_P2_send -> E_P3_recv -> E_P3_send -> E_P1_recv",
+    "vector_clock_monotonicity": true
+  },
+  "status": "PASS"
+}

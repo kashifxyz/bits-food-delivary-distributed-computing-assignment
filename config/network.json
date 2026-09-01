@@ -1,0 +1,16 @@
+{
+  "channels": [
+    { "sender_id": 1, "receiver_id": 2, "description": "P1 -> P2 (Order Placement / Updates)" },
+    { "sender_id": 1, "receiver_id": 3, "description": "P1 -> P3 (Delivery Dispatch)" },
+    { "sender_id": 1, "receiver_id": 4, "description": "P1 -> P4 (Independent Orders)" },
+    { "sender_id": 2, "receiver_id": 1, "description": "P2 -> P1 (Kitchen Status Updates)" },
+    { "sender_id": 2, "receiver_id": 3, "description": "P2 -> P3 (Food Ready Dispatch)" },
+    { "sender_id": 2, "receiver_id": 4, "description": "P2 -> P4 (Kitchen Coordination)" },
+    { "sender_id": 3, "receiver_id": 1, "description": "P3 -> P1 (Delivery Completion)" },
+    { "sender_id": 3, "receiver_id": 2, "description": "P3 -> P2 (Pickup Confirmation)" },
+    { "sender_id": 3, "receiver_id": 4, "description": "P3 -> P4 (Delivery Status)" },
+    { "sender_id": 4, "receiver_id": 1, "description": "P4 -> P1 (Independent Order Updates)" },
+    { "sender_id": 4, "receiver_id": 2, "description": "P4 -> P2 (Menu & Availability Broadcast)" },
+    { "sender_id": 4, "receiver_id": 3, "description": "P4 -> P3 (Delivery Requests)" }
+  ]
+}

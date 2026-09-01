@@ -1,0 +1,20 @@
+{
+  "test_id": "TC03",
+  "name": "Deterministic Concurrent Events",
+  "purpose": "Demonstrate two events occurring at P2 and P4 without causal communication such that neither happens before the other.",
+  "initial_state": {
+    "P2": "Kitchen idle",
+    "P4": "Menu ready"
+  },
+  "actions": [
+    "P2 logs internal event: 'Restaurant A started preparing special dessert'",
+    "P4 logs internal event: 'Restaurant B updated table reservation & availability'",
+    "Compare vector clocks of both events"
+  ],
+  "expected_result": {
+    "relation": "CONCURRENT",
+    "happens_before(E_P2, E_P4)": false,
+    "happens_before(E_P4, E_P2)": false
+  },
+  "status": "PASS"
+}

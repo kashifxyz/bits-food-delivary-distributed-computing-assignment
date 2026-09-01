@@ -1,0 +1,15 @@
+{
+  "test_id": "TC04",
+  "name": "In-Transit Message Capture in Global Snapshot",
+  "purpose": "Demonstrate Chandy-Lamport recording of flying messages inside channel states when snapshot is taken before message receipt.",
+  "actions": [
+    "P2 sends message to P3",
+    "Initiate snapshot from P1 before P3 completes processing",
+    "Verify channel state C(2->3) contains the in-flight message"
+  ],
+  "expected_result": {
+    "channel_state_captured": true,
+    "consistency": true
+  },
+  "status": "PASS"
+}

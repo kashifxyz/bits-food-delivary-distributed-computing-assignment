@@ -1,0 +1,26 @@
+{
+  "test_id": "TC02",
+  "name": "Vector Clock Propagation",
+  "purpose": "Verify exact mathematical progression of vector clocks under L[k]=max(L[k], R[k]) and L[i]+=1.",
+  "initial_state": {
+    "P1": [0, 0, 0, 0],
+    "P2": [0, 0, 0, 0],
+    "P3": [0, 0, 0, 0],
+    "P4": [0, 0, 0, 0]
+  },
+  "actions": [
+    "P1 internal tick -> [1, 0, 0, 0]",
+    "P1 sends message to P2 (clock attached: [2, 0, 0, 0])",
+    "P2 receives message -> [2, 1, 0, 0]",
+    "P2 internal tick -> [2, 2, 0, 0]",
+    "P2 sends message to P3 (clock attached: [2, 3, 0, 0])",
+    "P3 receives message -> [2, 3, 1, 0]",
+    "P4 independent internal tick -> [0, 0, 0, 1]"
+  ],
+  "expected_result": {
+    "happens_before_P1_P3": true,
+    "happens_before_P4_P3": false,
+    "concurrent_P4_P3": true
+  },
+  "status": "PASS"
+}

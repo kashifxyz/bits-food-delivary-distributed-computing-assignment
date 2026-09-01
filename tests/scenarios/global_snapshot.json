@@ -1,0 +1,18 @@
+{
+  "test_id": "TC05",
+  "name": "Complete Global Snapshot & Consistency Verification",
+  "purpose": "Execute distributed events across all four processes and verify Chandy-Lamport snapshot completeness and causal consistency.",
+  "actions": [
+    "Initiate activity on P1, P2, P3, P4",
+    "Trigger Chandy-Lamport snapshot at P2",
+    "Verify 4 process snapshots and 12 directed channel snapshots",
+    "Run ConsistencyChecker"
+  ],
+  "expected_result": {
+    "process_snapshots_count": 4,
+    "directed_channels_count": 12,
+    "consistent": true,
+    "issues": []
+  },
+  "status": "PASS"
+}

@@ -1,0 +1,40 @@
+{
+  "processes": [
+    {
+      "id": 1,
+      "name": "P1",
+      "role": "Order Processor",
+      "description": "Coordinates orders, assigns delivery, tracks lifecycle",
+      "host": "127.0.0.1",
+      "port": 5001,
+      "status": "ACTIVE"
+    },
+    {
+      "id": 2,
+      "name": "P2",
+      "role": "Restaurant A",
+      "description": "Receives orders, prepares food, notifies delivery partner",
+      "host": "127.0.0.1",
+      "port": 5002,
+      "status": "ACTIVE"
+    },
+    {
+      "id": 3,
+      "name": "P3",
+      "role": "Delivery Partner",
+      "description": "Accepts delivery jobs, picks up food, delivers to customer",
+      "host": "127.0.0.1",
+      "port": 5003,
+      "status": "ACTIVE"
+    },
+    {
+      "id": 4,
+      "name": "P4",
+      "role": "Restaurant B",
+      "description": "Independent restaurant, processes orders and generates concurrent events",
+      "host": "127.0.0.1",
+      "port": 5004,
+      "status": "ACTIVE"
+    }
+  ]
+}
