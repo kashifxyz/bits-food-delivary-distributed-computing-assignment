@@ -10,7 +10,7 @@ Responsibilities:
 3. Dispatches customer ORDER messages to P1 (Pizza Palace) and P2 (Burger Hub).
 4. Initiates Chandy-Lamport Global Snapshots (e.g. SNAPSHOT_1 and SNAPSHOT_2)
    by sending MARKER messages downstream to outgoing neighbors (P1, P2).
-5. Listens on Port 5000 to collect STATE messages from all 5 processes.
+5. Listens on Port 5000 (or fallback 5005) to collect STATE messages from all 5 processes.
 6. Evaluates and displays captured Global Snapshot states, performs causal
    consistency checks, and analyzes concurrent events.
 
@@ -52,7 +52,6 @@ def load_ports(path=CONFIG_PATH):
         c.read(path)
         if "ports" in c:
             return {k.split("_")[0].upper(): int(v) for k, v in c["ports"].items()}
-    # Fallback defaults if config file is not found
     return {"P0": 5000, "P1": 5001, "P2": 5002, "P3": 5003, "P4": 5004}
 
 
@@ -69,10 +68,9 @@ def load_hosts(path=CONFIG_PATH):
         if "process_hosts" in c:
             for k, v in c["process_hosts"].items():
                 p_name = k.split("_")[0].upper()
-                node_ref = v.strip()
+                node_ref = v.strip().upper()
                 resolved_ip = node_ips.get(node_ref, "")
                 hosts[p_name] = resolved_ip if resolved_ip else "localhost"
-    # Fallback all to localhost if not specified
     for p in ["P0", "P1", "P2", "P3", "P4"]:
         if p not in hosts or not hosts[p]:
             hosts[p] = "localhost"
@@ -119,7 +117,7 @@ def send_message(target_name, message):
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(3.0)
         sock.connect((host, port))
-        sock.send(json.dumps(message).encode())
+        sock.sendall(json.dumps(message).encode())
         sock.close()
         return True
     except Exception as e:
@@ -182,8 +180,7 @@ def trigger_snapshot(snapshot_id: str):
     print(f"[SNAPSHOT INITIATION] P0 triggering {snapshot_id}")
     print(f"{'='*60}{Style.RESET_ALL}")
 
-    # Use Abhirup's snapshot initiator
-    snapshot.initiate_snapshot(snapshot_id, PORTS)
+    snapshot.initiate_snapshot(snapshot_id, PORTS, HOSTS)
 
     # Save P0's own local state in state_store
     state_store.setdefault(snapshot_id, {})
@@ -215,7 +212,6 @@ def check_snapshot_consistency(snapshot_id: str):
             local_st = f"Active Orders: {len(local_st.get('active_orders', []))}"
         print(f"{p_name:<10} {clock_str:<25} {str(local_st)[:30]}")
 
-    # Consistency check: No causal anomalies between processes
     inconsistencies = []
     p_names = list(snaps.keys())
     for i in range(len(p_names)):
@@ -226,7 +222,6 @@ def check_snapshot_consistency(snapshot_id: str):
             if len(c_a) == NUM_PROCESSES and len(c_b) == NUM_PROCESSES:
                 idx_a = int(p_a.replace("P", ""))
                 idx_b = int(p_b.replace("P", ""))
-                # If process A's snapshot clock shows knowledge of an event at B that exceeds B's recorded clock
                 if c_a[idx_b] > c_b[idx_b]:
                     inconsistencies.append(
                         f"{p_a}'s recorded clock ({c_a}) observes events at {p_b} beyond {p_b}'s snapshot clock ({c_b})"
@@ -270,7 +265,6 @@ def dispatch(msg):
     sender = msg.get("from", "UNKNOWN")
 
     if mtype == "STATE":
-        # Handle state message from P1, P2, P3, P4
         snapshot_id = msg.get("snapshot_id")
         if "clock" in msg:
             vc.receive_event(msg["clock"])
@@ -297,7 +291,7 @@ def dispatch(msg):
         print(f"{Fore.GREEN}[DELIVERY COMPLETE] Order #{order_id} fulfilled via {sender}!{Style.RESET_ALL}")
 
     elif mtype == "MARKER":
-        snapshot.handle_marker(msg, PORTS)
+        snapshot.handle_marker(msg, PORTS, HOSTS)
 
     else:
         if "clock" in msg:
@@ -322,20 +316,30 @@ def handle_conn(conn):
             print(f"[{PROCESS_NAME}] Bad JSON received: {e}")
 
 
-def start_listener(port):
-    """Starts TCP listener on specified port."""
+def start_listener(port, auto_fallback=True):
+    """
+    Starts TCP listener on specified port.
+    If port 5000 is occupied by macOS AirPlay, automatically falls back to port 5005.
+    """
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    
+    current_port = port
     try:
-        server.bind(("0.0.0.0", port))
+        server.bind(("0.0.0.0", current_port))
     except OSError as e:
-        if e.errno == 48:
+        if e.errno == 48 and auto_fallback and current_port == 5000:
+            fallback_port = 5005
             print(
-                f"{Fore.RED}[P0] Port {port} is already in use.\n"
-                f"Note: On macOS, port 5000 is often reserved by AirPlay Receiver. "
-                f"You can pass --port <number> or update config/hosts.cfg.{Style.RESET_ALL}"
+                f"{Fore.YELLOW}[P0 Warning] Port 5000 is reserved by macOS AirPlay Receiver.\n"
+                f"Automatically falling back to port {fallback_port}...{Style.RESET_ALL}"
             )
-        raise e
+            current_port = fallback_port
+            PORTS["P0"] = fallback_port
+            server.bind(("0.0.0.0", current_port))
+        else:
+            raise e
+
     server.listen(16)
 
     def accept_loop():
@@ -347,7 +351,7 @@ def start_listener(port):
             threading.Thread(target=handle_conn, args=(conn,), daemon=True).start()
 
     threading.Thread(target=accept_loop, daemon=True).start()
-    return server
+    return server, current_port
 
 
 # ---------------------------------------------------------------------
@@ -449,10 +453,11 @@ if __name__ == "__main__":
     parser.add_argument("--snapshot", help="Trigger snapshot with specified ID")
     args = parser.parse_args()
 
-    port = args.port or PORTS[PROCESS_NAME]
-    start_listener(port)
+    requested_port = args.port or PORTS[PROCESS_NAME]
+    server, active_port = start_listener(requested_port, auto_fallback=(args.port is None))
+
     print(f"\n{Fore.MAGENTA}=======================================================")
-    print(f" [{PROCESS_NAME}] Central Order Processor listening on port {port}")
+    print(f" [{PROCESS_NAME}] Central Order Processor listening on port {active_port}")
     print(f" Hosts: {HOSTS}")
     print(f" Initial Clock: {vc.get_clock()}")
     print(f"======================================================={Style.RESET_ALL}\n")

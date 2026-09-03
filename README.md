@@ -54,7 +54,7 @@ The system models an online food delivery platform with 5 logical processes mapp
 
 | Process ID | Name | Role & Responsibilities | Prayogshala Node | Port |
 |---|---|---|---|---|
-| **P0** (0) | `P0` | **Coordinator & Order Processor**: Creates orders, dispatches to P1/P2, initiates snapshots, collects `STATE` messages, and verifies consistency. | **Node 1** (`NODE1_IP`) | `5000` |
+| **P0** (0) | `P0` | **Coordinator & Order Processor**: Creates orders, dispatches to P1/P2, initiates snapshots, collects `STATE` messages, and verifies consistency. | **Node 1** (`NODE1_IP`) | `5005` |
 | **P1** (1) | `Pizza Palace` | **Restaurant A**: Receives orders from P0, logs internal prep events, and dispatches food-ready delivery jobs to P3. | **Node 2** (`NODE2_IP`) | `5001` |
 | **P2** (2) | `Burger Hub` | **Restaurant B**: Receives orders from P0, logs internal prep events, and dispatches food-ready delivery jobs to P4. | **Node 2** (`NODE2_IP`) | `5002` |
 | **P3** (3) | `Fleet Runner A` | **Delivery Partner 1**: Accepts delivery jobs from P1, logs pickup/transit events, delivers food, and reports state. | **Node 3** (`NODE3_IP`) | `5003` |
