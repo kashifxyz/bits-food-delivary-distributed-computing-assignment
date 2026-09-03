@@ -21,6 +21,7 @@ import socket
 import threading
 import time
 import configparser
+import os
 
 from vector_clock import VectorClock
 from snapshot import ChandyLamportSnapshot
@@ -32,17 +33,37 @@ RESTAURANT_NAME = "Pizza Palace"
 DELIVERY_PARTNER = "P3"
 COORDINATOR = "P0"
 
-CONFIG_PATH = "config/hosts.cfg"
+CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "config", "hosts.cfg")
 
 
-def load_ports(path=CONFIG_PATH):
-    """Reads the [ports] section of hosts.cfg -> {'P0': 5000, 'P1': 5001, ...}"""
+def load_network_config(path=CONFIG_PATH):
+    """Reads [ports], [nodes], and [process_hosts] from hosts.cfg"""
     c = configparser.ConfigParser()
-    c.read(path)
-    return {k.split("_")[0].upper(): int(v) for k, v in c["ports"].items()}
+    ports = {"P0": 5000, "P1": 5001, "P2": 5002, "P3": 5003, "P4": 5004}
+    hosts = {"P0": "localhost", "P1": "localhost", "P2": "localhost", "P3": "localhost", "P4": "localhost"}
+
+    if os.path.exists(path):
+        c.read(path)
+        if "ports" in c:
+            for k, v in c["ports"].items():
+                ports[k.split("_")[0].upper()] = int(v)
+
+        node_ips = {}
+        if "nodes" in c:
+            for k, v in c["nodes"].items():
+                node_ips[k.upper()] = v.strip()
+
+        if "process_hosts" in c:
+            for k, v in c["process_hosts"].items():
+                p_name = k.split("_")[0].upper()
+                node_ref = v.strip().upper()
+                resolved = node_ips.get(node_ref, "")
+                hosts[p_name] = resolved if resolved else "localhost"
+
+    return ports, hosts
 
 
-PORTS = load_ports()
+PORTS, HOSTS = load_network_config()
 
 vc = VectorClock(process_id=PROCESS_ID, num_processes=NUM_PROCESSES)
 snapshot = ChandyLamportSnapshot(
@@ -57,22 +78,23 @@ state_store = {}  # only really used on P0, kept here just in case
 
 
 # ---------------------------------------------------------------------
-# Networking — same one-shot-socket convention as snapshot.py so P1 talks
-# the same protocol it already uses for MARKER/STATE.
-# NOTE: hardcodes "localhost" like snapshot.py does today. This only works
-# for single-node testing; needs a host lookup once NODE*_IP are filled in
-# and snapshot.py's send_message is updated to accept a host.
+# Networking — resolved host lookup from hosts.cfg with sendall()
 # ---------------------------------------------------------------------
 
 def send_message(target_name, message):
-    port = PORTS[target_name]
+    port = PORTS.get(target_name)
+    host = HOSTS.get(target_name, "localhost")
+    if not port:
+        print(f"[{PROCESS_NAME}] unknown target: {target_name}")
+        return
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect(("localhost", port))
-        sock.send(json.dumps(message).encode())
+        sock.settimeout(3.0)
+        sock.connect((host, port))
+        sock.sendall(json.dumps(message).encode())
         sock.close()
     except Exception as e:
-        print(f"[{PROCESS_NAME}] send error to {target_name}: {e}")
+        print(f"[{PROCESS_NAME}] send error to {target_name} ({host}:{port}): {e}")
 
 
 def handle_order(msg):
@@ -101,10 +123,16 @@ def handle_order(msg):
 
 def dispatch(msg):
     mtype = msg.get("type")
+    sender = msg.get("from", "")
+    
+    # Record channel messages if snapshot is currently active
+    if mtype != "MARKER":
+        snapshot.record_channel_message(sender, msg)
+
     if mtype == "ORDER":
         threading.Thread(target=handle_order, args=(msg,), daemon=True).start()
     elif mtype == "MARKER":
-        snapshot.handle_marker(msg, PORTS)
+        snapshot.handle_marker(msg, PORTS, HOSTS)
     elif mtype == "STATE":
         snapshot.handle_state(msg, state_store)
     else:
@@ -148,6 +176,6 @@ def start_listener(port):
 if __name__ == "__main__":
     port = PORTS[PROCESS_NAME]
     start_listener(port)
-    print(f"[{PROCESS_NAME} {RESTAURANT_NAME}] listening on port {port} ...")
+    print(f"[{PROCESS_NAME} {RESTAURANT_NAME}] listening on port {port} (Host: {HOSTS[PROCESS_NAME]}) ...")
     while True:
         time.sleep(1)

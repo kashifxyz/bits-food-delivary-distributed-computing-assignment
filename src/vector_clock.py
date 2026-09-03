@@ -22,8 +22,10 @@ class VectorClock:
             return self.clock.copy()
 
     def receive_event(self, received_clock: list) -> list:
+        if hasattr(received_clock, "get_clock"):
+            received_clock = received_clock.get_clock()
         with self.lock:
-            for i in range(self.num_processes):
+            for i in range(min(self.num_processes, len(received_clock))):
                 self.clock[i] = max(self.clock[i], received_clock[i])
             self.clock[self.process_id] += 1
             print(f"{Fore.CYAN}[RECV] P{self.process_id} | Clock: {self.clock}{Style.RESET_ALL}")
@@ -39,8 +41,12 @@ class VectorClock:
         with self.lock:
             return self.clock.copy()
 
-    def is_concurrent(self, other_clock: list) -> bool:
+    def is_concurrent(self, other_clock) -> bool:
+        if hasattr(other_clock, "get_clock"):
+            other_clock = other_clock.get_clock()
         with self.lock:
+            if not isinstance(other_clock, (list, tuple)) or len(other_clock) != self.num_processes:
+                return False
             less_or_equal = any(self.clock[i] < other_clock[i] for i in range(self.num_processes))
             greater_or_equal = any(self.clock[i] > other_clock[i] for i in range(self.num_processes))
             return less_or_equal and greater_or_equal
