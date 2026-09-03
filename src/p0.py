@@ -21,6 +21,7 @@ import argparse
 import configparser
 import json
 import os
+import signal
 import socket
 import sys
 import threading
@@ -39,6 +40,10 @@ COORDINATOR = "P0"
 OUTGOING_NEIGHBORS = ["P1", "P2"]
 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "config", "hosts.cfg")
+
+# Server control flag
+running = True
+server_socket = None
 
 
 # ---------------------------------------------------------------------
@@ -100,6 +105,31 @@ state_store = {}
 # Store for active/completed orders
 orders_store = {}
 order_counter = 100
+
+
+# ---------------------------------------------------------------------
+# Graceful Shutdown
+# ---------------------------------------------------------------------
+
+def shutdown_handler(signum=None, frame=None):
+    """Handles Ctrl+C or termination signals gracefully."""
+    global running, server_socket
+    if not running:
+        return
+    running = False
+    print(f"\n{Fore.YELLOW}[P0] Shutting down gracefully... Cleaning up sockets & state.{Style.RESET_ALL}")
+    if server_socket:
+        try:
+            server_socket.close()
+        except Exception:
+            pass
+    print(f"{Fore.GREEN}[P0] Shutdown complete. Goodbye!{Style.RESET_ALL}")
+    sys.exit(0)
+
+
+# Register signal handlers
+signal.signal(signal.SIGINT, shutdown_handler)
+signal.signal(signal.SIGTERM, shutdown_handler)
 
 
 # ---------------------------------------------------------------------
@@ -182,7 +212,6 @@ def trigger_snapshot(snapshot_id: str):
 
     snapshot.initiate_snapshot(snapshot_id, PORTS, HOSTS)
 
-    # Save P0's own local state in state_store
     state_store.setdefault(snapshot_id, {})
     state_store[snapshot_id][PROCESS_NAME] = {
         "process": PROCESS_NAME,
@@ -321,6 +350,7 @@ def start_listener(port, auto_fallback=True):
     Starts TCP listener on specified port.
     If port 5000 is occupied by macOS AirPlay, automatically falls back to port 5005.
     """
+    global server_socket
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     
@@ -341,9 +371,10 @@ def start_listener(port, auto_fallback=True):
             raise e
 
     server.listen(16)
+    server_socket = server
 
     def accept_loop():
-        while True:
+        while running:
             try:
                 conn, _addr = server.accept()
             except OSError:
@@ -403,41 +434,45 @@ def run_automated_flow():
 
 def interactive_menu():
     """Provides interactive control panel for demo and testing."""
-    while True:
-        print(f"\n{Fore.CYAN}=== P0 Central Order Processor Menu ==={Style.RESET_ALL}")
-        print("  1. Send Order to P1 (Pizza Palace)")
-        print("  2. Send Order to P2 (Burger Hub)")
-        print("  3. Trigger Chandy-Lamport Snapshot (e.g. SNAPSHOT_1)")
-        print("  4. View Collected Snapshots & Verify Consistency")
-        print("  5. View Current P0 Vector Clock")
-        print("  6. Run Full Automated Demo Scenario (Orders + 2 Snapshots)")
-        print("  0. Exit")
-        choice = input("Select an option [0-6]: ").strip()
+    while running:
+        try:
+            print(f"\n{Fore.CYAN}=== P0 Central Order Processor Menu ==={Style.RESET_ALL}")
+            print("  1. Send Order to P1 (Pizza Palace)")
+            print("  2. Send Order to P2 (Burger Hub)")
+            print("  3. Trigger Chandy-Lamport Snapshot (e.g. SNAPSHOT_1)")
+            print("  4. View Collected Snapshots & Verify Consistency")
+            print("  5. View Current P0 Vector Clock")
+            print("  6. Run Full Automated Demo Scenario (Orders + 2 Snapshots)")
+            print("  0. Exit")
+            choice = input("Select an option [0-6]: ").strip()
 
-        if choice == "1":
-            item = input("Enter Pizza item [default: Margherita Pizza]: ").strip() or "Margherita Pizza"
-            send_order("P1", item)
-        elif choice == "2":
-            item = input("Enter Burger item [default: Double Cheeseburger]: ").strip() or "Double Cheeseburger"
-            send_order("P2", item)
-        elif choice == "3":
-            snap_id = input("Enter Snapshot ID [default: SNAPSHOT_1]: ").strip() or "SNAPSHOT_1"
-            trigger_snapshot(snap_id)
-        elif choice == "4":
-            if not state_store:
-                print(f"{Fore.YELLOW}No snapshots recorded yet.{Style.RESET_ALL}")
+            if choice == "1":
+                item = input("Enter Pizza item [default: Margherita Pizza]: ").strip() or "Margherita Pizza"
+                send_order("P1", item)
+            elif choice == "2":
+                item = input("Enter Burger item [default: Double Cheeseburger]: ").strip() or "Double Cheeseburger"
+                send_order("P2", item)
+            elif choice == "3":
+                snap_id = input("Enter Snapshot ID [default: SNAPSHOT_1]: ").strip() or "SNAPSHOT_1"
+                trigger_snapshot(snap_id)
+            elif choice == "4":
+                if not state_store:
+                    print(f"{Fore.YELLOW}No snapshots recorded yet.{Style.RESET_ALL}")
+                else:
+                    for s_id in state_store.keys():
+                        check_snapshot_consistency(s_id)
+            elif choice == "5":
+                print(f"\n{Fore.GREEN}Current P0 Vector Clock: {vc.get_clock()}{Style.RESET_ALL}\n")
+            elif choice == "6":
+                run_automated_flow()
+            elif choice == "0":
+                shutdown_handler()
+                break
             else:
-                for s_id in state_store.keys():
-                    check_snapshot_consistency(s_id)
-        elif choice == "5":
-            print(f"\n{Fore.GREEN}Current P0 Vector Clock: {vc.get_clock()}{Style.RESET_ALL}\n")
-        elif choice == "6":
-            run_automated_flow()
-        elif choice == "0":
-            print("Exiting P0.")
+                print("Invalid choice, please try again.")
+        except (KeyboardInterrupt, EOFError):
+            shutdown_handler()
             break
-        else:
-            print("Invalid choice, please try again.")
 
 
 # ---------------------------------------------------------------------
@@ -462,16 +497,19 @@ if __name__ == "__main__":
     print(f" Initial Clock: {vc.get_clock()}")
     print(f"======================================================={Style.RESET_ALL}\n")
 
-    if args.auto:
-        time.sleep(1.0)
-        run_automated_flow()
-    elif args.order:
-        send_order(args.order, args.item)
-    elif args.snapshot:
-        trigger_snapshot(args.snapshot)
-    else:
-        if sys.stdin.isatty():
-            interactive_menu()
+    try:
+        if args.auto:
+            time.sleep(1.0)
+            run_automated_flow()
+        elif args.order:
+            send_order(args.order, args.item)
+        elif args.snapshot:
+            trigger_snapshot(args.snapshot)
         else:
-            while True:
-                time.sleep(1)
+            if sys.stdin.isatty():
+                interactive_menu()
+            else:
+                while running:
+                    time.sleep(1)
+    except (KeyboardInterrupt, EOFError):
+        shutdown_handler()

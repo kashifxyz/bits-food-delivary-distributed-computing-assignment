@@ -22,6 +22,8 @@ import threading
 import time
 import configparser
 import os
+import signal
+import sys
 
 from vector_clock import VectorClock
 from snapshot import ChandyLamportSnapshot
@@ -35,11 +37,33 @@ COORDINATOR = "P0"
 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "config", "hosts.cfg")
 
+running = True
+server_socket = None
+
+
+def shutdown_handler(signum=None, frame=None):
+    global running, server_socket
+    if not running:
+        return
+    running = False
+    print(f"\n[{PROCESS_NAME}] Shutting down gracefully...")
+    if server_socket:
+        try:
+            server_socket.close()
+        except Exception:
+            pass
+    print(f"[{PROCESS_NAME}] Stopped.")
+    sys.exit(0)
+
+
+signal.signal(signal.SIGINT, shutdown_handler)
+signal.signal(signal.SIGTERM, shutdown_handler)
+
 
 def load_network_config(path=CONFIG_PATH):
     """Reads [ports], [nodes], and [process_hosts] from hosts.cfg"""
     c = configparser.ConfigParser()
-    ports = {"P0": 5000, "P1": 5001, "P2": 5002, "P3": 5003, "P4": 5004}
+    ports = {"P0": 5005, "P1": 5001, "P2": 5002, "P3": 5003, "P4": 5004}
     hosts = {"P0": "localhost", "P1": "localhost", "P2": "localhost", "P3": "localhost", "P4": "localhost"}
 
     if os.path.exists(path):
@@ -74,12 +98,8 @@ snapshot = ChandyLamportSnapshot(
     coordinator=COORDINATOR,
 )
 
-state_store = {}  # only really used on P0, kept here just in case
+state_store = {}
 
-
-# ---------------------------------------------------------------------
-# Networking — resolved host lookup from hosts.cfg with sendall()
-# ---------------------------------------------------------------------
 
 def send_message(target_name, message):
     port = PORTS.get(target_name)
@@ -104,10 +124,10 @@ def handle_order(msg):
     print(f"[{PROCESS_NAME} {RESTAURANT_NAME}] RECEIVE ORDER {order_id} from {msg['from']} | Clock: {vc.get_clock()}")
 
     vc.internal_event("Order confirmed")
-    time.sleep(0.5)  # simulate confirmation delay
+    time.sleep(0.5)
 
     vc.internal_event("Preparing food")
-    time.sleep(1.0)  # simulate prep time
+    time.sleep(1.0)
 
     vc.internal_event("Food ready for pickup")
 
@@ -125,7 +145,6 @@ def dispatch(msg):
     mtype = msg.get("type")
     sender = msg.get("from", "")
 
-    # Record channel messages if snapshot is currently active
     if mtype != "MARKER":
         snapshot.record_channel_message(sender, msg)
 
@@ -156,13 +175,15 @@ def handle_conn(conn):
 
 
 def start_listener(port):
+    global server_socket
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind(("0.0.0.0", port))
     server.listen(16)
+    server_socket = server
 
     def accept_loop():
-        while True:
+        while running:
             try:
                 conn, _addr = server.accept()
             except OSError:
@@ -177,5 +198,8 @@ if __name__ == "__main__":
     port = PORTS[PROCESS_NAME]
     start_listener(port)
     print(f"[{PROCESS_NAME} {RESTAURANT_NAME}] listening on port {port} (Host: {HOSTS[PROCESS_NAME]}) ...")
-    while True:
-        time.sleep(1)
+    try:
+        while running:
+            time.sleep(1)
+    except (KeyboardInterrupt, EOFError):
+        shutdown_handler()
