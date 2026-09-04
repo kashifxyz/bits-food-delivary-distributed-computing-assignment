@@ -109,9 +109,11 @@ class ChandyLamportSnapshot:
 
         with self.lock:
 
+            # vector_clock filled in after marker sends below (see handle_marker
+            # for why: it keeps our recorded clock >= anything we send out).
             self.local_states[snapshot_id] = {
                 "process": self.process_name,
-                "vector_clock": self.vc.get_clock(),
+                "vector_clock": None,
                 "local_state": {
                     "initiator": True
                 }
@@ -159,6 +161,8 @@ class ChandyLamportSnapshot:
                 f" -> {neighbor}"
                 f" | {snapshot_id}"
             )
+
+        self.local_states[snapshot_id]["vector_clock"] = self.vc.get_clock()
 
         # P0 usually has no incoming markers,
         # therefore send state immediately.
@@ -256,13 +260,19 @@ class ChandyLamportSnapshot:
 
                 first_marker = True
 
+                # vector_clock is filled in AFTER marker forwarding below --
+                # forwarding is itself a send event that advances our clock,
+                # so recording it here (before forwarding) would let this
+                # clock value undercount what we're about to send downstream,
+                # making a downstream process "know" more about us than our
+                # own recorded state admits: a real causal inconsistency.
                 self.local_states[snapshot_id] = {
 
                     "process":
                         self.process_name,
 
                     "vector_clock":
-                        self.vc.get_clock(),
+                        None,
 
                     "local_state":
                         f"Recorded by "
@@ -345,6 +355,9 @@ class ChandyLamportSnapshot:
                     f" {self.process_name}"
                     f" -> {neighbor}"
                 )
+
+            # Now freeze the clock -- it's >= anything we just sent out.
+            self.local_states[snapshot_id]["vector_clock"] = self.vc.get_clock()
 
         #
         # Snapshot complete?
@@ -449,9 +462,18 @@ class ChandyLamportSnapshot:
         state_store
     ):
 
-        snapshot_id = msg.get(
-            "snapshot_id",
-            "SNAPSHOT_1"
+        # Must match handle_marker()'s extraction: some senders (e.g. P3/P4)
+        # nest snapshot_id inside "data" instead of at the top level. Using a
+        # cruder fallback here than handle_marker() does causes state to be
+        # silently filed under the wrong snapshot bucket -- e.g. SNAPSHOT_2
+        # data landing in "SNAPSHOT_1", stalling SNAPSHOT_2 short of 5/5.
+        snapshot_id = (
+            msg.get("snapshot_id")
+            or (
+                msg.get("data", {}).get("snapshot_id")
+                if isinstance(msg.get("data"), dict) else None
+            )
+            or "SNAPSHOT_1"
         )
 
         sender = msg.get(
