@@ -11,14 +11,6 @@ Role:
       STATE message back to P0. P4 is a leaf node in the flow
       (P0 -> P2 -> P4), so it does not forward the marker any further.
 
-    Note: Snapshot 2 is triggered by P0 mid-way through Order #2 (after P2
-    receives the order, before P4 delivers). That means the marker that
-    reaches P4 for Snapshot 2 may arrive while process_delivery() is still
-    running (order_status will be PICKED_UP or IN_TRANSIT rather than
-    DELIVERED) - the snapshot handler below simply records whatever
-    order_status is current at the moment the marker is processed, which is
-    exactly the point of the algorithm.
-
 Run:
     python p4.py
 """
@@ -27,6 +19,10 @@ import socket
 import threading
 import json
 import time
+import configparser
+import os
+import signal
+import sys
 from colorama import Fore, Style, init
 
 from vector_clock import VectorClock
@@ -38,32 +34,76 @@ init(autoreset=True)
 # ----------------------------------------------------------------------
 PROCESS_ID = 4
 PROCESS_NAME = "P4"
-UPSTREAM_RESTAURANT = "P2"          # Order handoff arrives from this process
+UPSTREAM_RESTAURANT = "P2"
 FLEET_NAME = "Fleet Runner B"
 
-LISTEN_HOST = "0.0.0.0"             # bind on all interfaces (Node 3 - slave2)
-LISTEN_PORT = 5004
+CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "config", "hosts.cfg")
 
-NODES = {
-    "P0": {"host": "127.0.0.1", "port": 5000},
-    "P1": {"host": "127.0.0.1", "port": 5001},
-    "P2": {"host": "127.0.0.1", "port": 5002},
-    "P3": {"host": "127.0.0.1", "port": 5003},
-    "P4": {"host": "127.0.0.1", "port": 5004},
-}
+running = True
+server_socket = None
+
+
+def shutdown_handler(signum=None, frame=None):
+    global running, server_socket
+    if not running:
+        return
+    running = False
+    print(f"\n[{PROCESS_NAME}] Shutting down gracefully...")
+    if server_socket:
+        try:
+            server_socket.close()
+        except Exception:
+            pass
+    print(f"[{PROCESS_NAME}] Stopped.")
+    sys.exit(0)
+
+
+signal.signal(signal.SIGINT, shutdown_handler)
+signal.signal(signal.SIGTERM, shutdown_handler)
+
+
+def load_network_config(path=CONFIG_PATH):
+    """Reads [ports], [nodes], and [process_hosts] from hosts.cfg"""
+    c = configparser.ConfigParser()
+    ports = {"P0": 5005, "P1": 5001, "P2": 5002, "P3": 5003, "P4": 5004}
+    hosts = {"P0": "localhost", "P1": "localhost", "P2": "localhost", "P3": "localhost", "P4": "localhost"}
+
+    if os.path.exists(path):
+        c.read(path)
+        if "ports" in c:
+            for k, v in c["ports"].items():
+                ports[k.split("_")[0].upper()] = int(v)
+
+        node_ips = {}
+        if "nodes" in c:
+            for k, v in c["nodes"].items():
+                node_ips[k.upper()] = v.strip()
+
+        if "process_hosts" in c:
+            for k, v in c["process_hosts"].items():
+                p_name = k.split("_")[0].upper()
+                node_ref = v.strip().upper()
+                resolved = node_ips.get(node_ref, "")
+                hosts[p_name] = resolved if resolved else "localhost"
+
+    return ports, hosts
+
+
+PORTS, HOSTS = load_network_config()
+LISTEN_HOST = "0.0.0.0"
+LISTEN_PORT = PORTS.get(PROCESS_NAME, 5004)
 
 vc = VectorClock(process_id=PROCESS_ID, num_processes=5)
 
 # ----------------------------------------------------------------------
-# Local mutable state (guarded by locks since it's touched from multiple
-# connection-handler threads)
+# Local mutable state
 # ----------------------------------------------------------------------
 state_lock = threading.Lock()
 order_status = "WAITING_FOR_ORDER"
 current_order_label = None
 
 snap_lock = threading.Lock()
-recorded_snapshots = {}  # snapshot_id -> True once this process has recorded
+recorded_snapshots = {}
 
 def log_send(target, label, clock):
     print(f"{Fore.GREEN}[SEND] {PROCESS_NAME} → {target} | {label} | Clock: {clock}{Style.RESET_ALL}")
@@ -85,38 +125,49 @@ def log_error(msg):
 # Networking
 # ----------------------------------------------------------------------
 def send_message(target_name, msg_type, data, clock):
-    """Open a short-lived TCP connection, send one newline-delimited JSON
-    message, then close. Simple request/response style suitable for the
-    assignment's message volume."""
-    node = NODES[target_name]
+    target_host = HOSTS.get(target_name, "localhost")
+    target_port = PORTS.get(target_name)
+    if not target_port:
+        log_error(f"unknown target: {target_name}")
+        return
     message = {"type": msg_type, "data": data, "clock": clock, "from": PROCESS_NAME}
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.settimeout(10)
-            s.connect((node["host"], node["port"]))
+            s.settimeout(5)
+            s.connect((target_host, target_port))
             s.sendall((json.dumps(message) + "\n").encode("utf-8"))
     except Exception as e:
-        log_error(f"failed to send {msg_type} to {target_name}: {e}")
+        log_error(f"failed to send {msg_type} to {target_name} ({target_host}:{target_port}): {e}")
 
 
 def start_server():
+    global server_socket
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind((LISTEN_HOST, LISTEN_PORT))
     server.listen(20)
-    print(f"{Fore.BLUE}{PROCESS_NAME} ({FLEET_NAME}) listening on port {LISTEN_PORT}...{Style.RESET_ALL}")
-    while True:
-        conn, addr = server.accept()
-        threading.Thread(target=handle_connection, args=(conn,), daemon=True).start()
+    server_socket = server
+    print(f"{Fore.BLUE}{PROCESS_NAME} ({FLEET_NAME}) listening on port {LISTEN_PORT} (Host: {HOSTS[PROCESS_NAME]})...{Style.RESET_ALL}")
+    
+    def accept_loop():
+        while running:
+            try:
+                conn, addr = server.accept()
+            except OSError:
+                break
+            threading.Thread(target=handle_connection, args=(conn,), daemon=True).start()
+
+    threading.Thread(target=accept_loop, daemon=True).start()
+    return server
 
 
 def handle_connection(conn):
     with conn:
         buffer = b""
-        while True:
+        while running:
             try:
                 chunk = conn.recv(4096)
-            except ConnectionResetError:
+            except (ConnectionResetError, OSError):
                 break
             if not chunk:
                 break
@@ -131,6 +182,12 @@ def handle_connection(conn):
                     log_error(f"received malformed JSON: {line!r}")
                     continue
                 dispatch(msg)
+        if buffer.strip():
+            try:
+                msg = json.loads(buffer.decode("utf-8"))
+                dispatch(msg)
+            except json.JSONDecodeError:
+                pass
 
 
 def dispatch(msg):
@@ -147,10 +204,14 @@ def dispatch(msg):
 # Order handling
 # ----------------------------------------------------------------------
 def handle_delivery_handoff(msg):
-    """Triggered when P2 hands off a cooked order to this delivery partner."""
     global order_status, current_order_label
 
-    order_label = msg.get("data", "Order")
+    payload = msg.get("payload") or msg.get("data")
+    if isinstance(payload, dict):
+        order_label = f"Order #{payload.get('order_id', 102)} ({payload.get('item', 'Item')})"
+    else:
+        order_label = str(payload or "Order")
+
     source = msg.get("from", "?")
 
     clock = vc.receive_event(msg.get("clock", vc.get_clock()))
@@ -164,7 +225,6 @@ def handle_delivery_handoff(msg):
 
 
 def process_delivery(order_label, restaurant):
-    """Order picked up -> In transit -> Order delivered, then notify P0."""
     global order_status
 
     with state_lock:
@@ -192,17 +252,9 @@ def process_delivery(order_label, restaurant):
 # Chandy-Lamport snapshot participation
 # ----------------------------------------------------------------------
 def handle_marker(msg):
-    """P2 forwards the MARKER it received from P0 downstream to P4.
-    P4 records its local state (first marker) and reports STATE back to P0.
-    P4 has no further downstream process, so the marker is not forwarded
-    any further.
-
-    For Snapshot 2 this handler may fire while process_delivery() is still
-    running on another thread - order_status is read as-is at that instant,
-    which correctly captures the "mid-way through Order #2" system state."""
     source = msg.get("from", "?")
     data = msg.get("data")
-    snapshot_id = data.get("snapshot_id") if isinstance(data, dict) else data
+    snapshot_id = msg.get("snapshot_id") or (data.get("snapshot_id") if isinstance(data, dict) else data) or "SNAPSHOT_1"
 
     clock = vc.receive_event(msg.get("clock", vc.get_clock()))
     log_recv(source, f"MARKER for {snapshot_id}", clock)
@@ -213,8 +265,6 @@ def handle_marker(msg):
             recorded_snapshots[snapshot_id] = True
 
     if already_recorded:
-        # A duplicate marker on an already-recorded snapshot just means the
-        # incoming channel is now empty; nothing new to record or send.
         log_snapshot(f"{snapshot_id} channel {source}->{PROCESS_NAME} closed (duplicate marker)", vc.get_clock())
         return
 
@@ -224,6 +274,7 @@ def handle_marker(msg):
             "role": FLEET_NAME,
             "snapshot_id": snapshot_id,
             "vector_clock": vc.get_clock(),
+            "local_state": f"Status: {order_status}, Current: {current_order_label}",
             "order_status": order_status,
             "current_order": current_order_label,
             "incoming_channel_state": f"{source}->{PROCESS_NAME}: recorded empty on marker receipt",
@@ -234,10 +285,23 @@ def handle_marker(msg):
 
     state_clock = vc.send_event()
     log_send("P0", f"STATE for {snapshot_id}", state_clock)
-    send_message("P0", "STATE", snapshot_state, state_clock)
+
+    state_message_payload = {
+        "snapshot_id": snapshot_id,
+        "process": PROCESS_NAME,
+        "vector_clock": vc.get_clock(),
+        "local_state": f"Status: {order_status}, Order: {current_order_label}",
+        "data": snapshot_state
+    }
+    send_message("P0", "STATE", state_message_payload, state_clock)
 
 
 # ----------------------------------------------------------------------
 if __name__ == "__main__":
     print(f"{Fore.BLUE}=== {PROCESS_NAME} : Delivery Partner 2 ({FLEET_NAME}) starting up ==={Style.RESET_ALL}")
     start_server()
+    try:
+        while running:
+            time.sleep(1)
+    except (KeyboardInterrupt, EOFError):
+        shutdown_handler()

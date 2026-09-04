@@ -1,24 +1,21 @@
 # Distributed System Monitor — Bug Audit & Resolution Report
 
-**Audit Date & Time:** 2026-09-03 23:41:34 IST  
-**Resolution Date & Time:** 2026-09-03 23:44:15 IST  
+**Initial Audit Date & Time:** 2026-09-03 23:41:34 IST  
+**Latest Update Date & Time:** 2026-09-04 14:15:42 IST  
 **Project:** Distributed Food Delivery System (Tracking Events and Capturing Global State)  
-**Scope:** Existing codebase review & fixes (`src/vector_clock.py`, `src/snapshot.py`, `src/p1.py`, `src/p2.py`, `src/p0.py`, `config/hosts.cfg`, `tests/`)
+**Scope:** Full multi-process codebase review & fixes (`src/vector_clock.py`, `src/snapshot.py`, `src/p0.py`, `src/p1.py`, `src/p2.py`, `src/p3.py`, `src/p4.py`, `config/hosts.cfg`, `tests/`)
 
 ---
 
 ## 1. Executive Summary
 
-A comprehensive code audit was conducted across the distributed processes and algorithm implementations. A total of **6 bugs / architectural flaws** were identified and successfully resolved:
-* **2 Critical Deployment/Networking Bugs** (Hardcoded localhost & Unresolved configuration node IPs)
-* **2 Protocol & Socket Reliability Bugs** (Partial TCP `send` vs `sendall` & macOS port 5000 collision)
-* **2 Distributed Algorithm Compliance Bugs** (Missing channel message recording in Chandy-Lamport & `VectorClock` type mismatch handling)
-
-All 9 vector clock tests and integration tests pass with 100% success rate.
+A comprehensive code audit was conducted across the distributed processes and algorithm implementations across two engineering iterations. A total of **10 bugs / integration flaws** have been identified and resolved:
+* **Iteration 1 (2026-09-03):** Fixed 6 foundational bugs in Vector Clocks, Chandy-Lamport channel state recording, socket streaming (`sendall`), macOS port 5000 AirPlay collision, and `hosts.cfg` configuration loading.
+* **Iteration 2 (2026-09-04):** Resolved 4 integration and protocol compatibility bugs arising from the addition of Delivery Partner processes `src/p3.py` and `src/p4.py`, including delivery handoff formatting, nested `STATE` payload resolution, dynamic host resolution, and graceful `Ctrl+C` shutdown handling across all 5 nodes.
 
 ---
 
-## 2. Bug Details & Fix Resolutions
+## 2. Iteration 1 Bug Audit & Resolutions (2026-09-03 23:41:34 IST)
 
 ### BUG-01: Hardcoded `"localhost"` in Inter-Process Socket Communication
 * **Severity:** Critical (Blocks Cloud/Multi-Node Deployment)
@@ -80,7 +77,7 @@ All 9 vector clock tests and integration tests pass with 100% success rate.
 * **Description:** 
   Port `5000` is used by macOS AirPlay Receiver (`ControlCenter`). When developers test locally on macOS, `P0` crashed on `bind()` with `OSError: [Errno 48] Address already in use`.
 * **Fix Applied:** 
-  Added `--port` CLI override argument in `src/p0.py` and wrapped `start_listener()` in friendly error handling that diagnoses macOS AirPlay conflicts and guides the user.
+  Updated `config/hosts.cfg` default `P0_PORT=5005`, added `--port` CLI override in `src/p0.py`, and implemented automatic port fallback to 5005 if port 5000 is occupied.
 * **Status:** ✅ RESOLVED
 
 ---
@@ -96,9 +93,57 @@ All 9 vector clock tests and integration tests pass with 100% success rate.
 
 ---
 
-## 3. Verification Log
+## 3. Iteration 2 Bug Audit & Resolutions (2026-09-04 14:15:42 IST)
+*Scope: Integration of `src/p3.py` (Fleet Runner A) and `src/p4.py` (Fleet Runner B) with `p0.py` and `snapshot.py`.*
 
-| Test Suite | Commands Run | Result | Notes |
-|---|---|---|---|
-| **Vector Clock Unit Tests** | `python tests/test_vector_clock.py` | ✅ **9/9 PASSED** | All vector clock progression, merging, concurrency, and thread-safety tests passed. |
-| **P0 & Snapshot Integration Test** | `python tests/test_p0_integration.py` | ✅ **PASSED** | End-to-end socket communication, order dispatching, snapshot initiation, and causal consistency verification succeeded. |
+### BUG-07: Hardcoded Port 5000 & Host Resolution Failure in `p3.py` & `p4.py`
+* **Severity:** Critical (Blocks Multi-Node & Local 5-Process Execution)
+* **Affected Files:** `src/p3.py` (lines 39-45), `src/p4.py` (lines 47-53)
+* **Description:** 
+  `p3.py` and `p4.py` used a hardcoded `NODES` dictionary specifying `P0: {"host": "127.0.0.1", "port": 5000}`. Because `P0` binds to port `5005` (and connects via resolved Prayogshala node IPs in cloud deployments), `P3` and `P4` failed to deliver `STATE` snapshot reports and `DELIVERY` confirmations to `P0`, crashing with `ConnectionRefusedError`.
+* **Fix Applied:** 
+  Replaced hardcoded `NODES` with `load_network_config()` from `config/hosts.cfg` across `src/p3.py` and `src/p4.py`.
+* **Status:** ✅ RESOLVED
+
+---
+
+### BUG-08: Payload & Snapshot ID Key Mismatch in `STATE` Messages from `P3`/`P4`
+* **Severity:** High (State Collection Failure / Snapshot Dropping)
+* **Affected Files:** `src/p0.py`, `src/snapshot.py`, `src/p3.py`, `src/p4.py`
+* **Description:** 
+  `p3.py` and `p4.py` wrapped their state inside `msg["data"]["snapshot_id"]` instead of top-level `msg["snapshot_id"]`. When received by `P0` / `snapshot.py`, `msg.get("snapshot_id")` evaluated to `None` or raised a `KeyError`, preventing `P0` from associating the state report with the active snapshot.
+* **Fix Applied:** 
+  Updated `snapshot.handle_state()` and `p0.py` `dispatch()` to safely extract `snapshot_id` from either top-level `msg["snapshot_id"]` or nested `msg["data"]["snapshot_id"]`. Updated process counters to track `Progress: 5/5 processes recorded`.
+* **Status:** ✅ RESOLVED
+
+---
+
+### BUG-09: Unhandled `DELIVERY` Message Type at `P0` Coordinator
+* **Severity:** Medium (Protocol Compatibility / Delivery Tracking)
+* **Affected Files:** `src/p0.py` (lines 280-295)
+* **Description:** 
+  `p3.py` and `p4.py` transmit delivery completion notifications using `{"type": "DELIVERY", "data": "Order #... delivered...", "from": "P3"}`. `p0.py` previously only matched `DELIVERY_COMPLETE` / `ORDER_DELIVERED`, causing incoming notifications to fall into the unhandled message log without merging vector clocks or updating delivery status.
+* **Fix Applied:** 
+  Extended `p0.py` dispatching logic to match `type: "DELIVERY"`, advance `P0`'s vector clock upon receipt (`vc.receive_event()`), and log order fulfillment.
+* **Status:** ✅ RESOLVED
+
+---
+
+### BUG-10: Lack of Graceful Signal Handling (`SIGINT`/`Ctrl+C`)
+* **Severity:** Low (Terminal Developer Experience & Socket Cleanup)
+* **Affected Files:** `src/p0.py`, `src/p1.py`, `src/p2.py`, `src/p3.py`, `src/p4.py`
+* **Description:** 
+  Pressing `Ctrl+C` produced raw `KeyboardInterrupt` stack traces across all process terminals and left TCP listening sockets in `TIME_WAIT` / open states on local machines.
+* **Fix Applied:** 
+  Added `signal.signal(signal.SIGINT, shutdown_handler)` and `signal.signal(signal.SIGTERM, shutdown_handler)` across all 5 processes to close listening sockets and exit cleanly.
+* **Status:** ✅ RESOLVED
+
+---
+
+## 4. Complete Verification & Regression Log
+
+| Test Suite / Script | Target Scope | Command Executed | Result | Notes |
+|---|---|---|---|---|
+| **Vector Clock Unit Tests** | Vector Clocks ($N=5$) | `python tests/test_vector_clock.py` | ✅ **9/9 PASSED** | Verified initial state, increments, merge $\max(L, R)$, concurrency detection ($P1 \parallel P2$), and thread safety. |
+| **P0 & Snapshot Unit Test** | P0 Coordinator Socket & Cut | `python tests/test_p0_integration.py` | ✅ **PASSED** | Validated P0 socket dispatching, marker emission, state reception, and causal consistency calculation. |
+| **Full System 5-Node Test** | All 5 Processes (`P0`-`P4`) | `python tests/test_full_system.py` | ✅ **PASSED** | End-to-end multi-process execution: order creation $\to$ kitchen prep $\to$ transit $\to$ delivery $\to$ 2 global snapshots capturing all 5/5 processes consistent. |

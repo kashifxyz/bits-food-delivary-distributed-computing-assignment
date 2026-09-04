@@ -27,7 +27,7 @@ CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "config", "hosts.cfg
 def load_network_config(path=CONFIG_PATH):
     """Loads ports and resolves host IPs from hosts.cfg."""
     c = configparser.ConfigParser()
-    ports = {"P0": 5000, "P1": 5001, "P2": 5002, "P3": 5003, "P4": 5004}
+    ports = {"P0": 5005, "P1": 5001, "P2": 5002, "P3": 5003, "P4": 5004}
     hosts = {"P0": "localhost", "P1": "localhost", "P2": "localhost", "P3": "localhost", "P4": "localhost"}
 
     if os.path.exists(path):
@@ -70,17 +70,12 @@ class ChandyLamportSnapshot:
         self.snapshot_active = {}
         self.recorded_state = {}
         self.marker_received = {}
-        self.channel_state = {}  # {snapshot_id: {sender_id: [messages]}}
-        self.channel_recording = {}  # {snapshot_id: {sender_id: bool}}
+        self.channel_state = {}
+        self.channel_recording = {}
 
         self.ports, self.hosts = load_network_config()
 
-    # ====================================================
-    # RECORD LOCAL STATE
-    # ====================================================
-
     def record_local_state(self, snapshot_id, extra_state=None):
-
         state = {
             "process": self.process_name,
             "vector_clock": self.vc.get_clock(),
@@ -94,10 +89,6 @@ class ChandyLamportSnapshot:
             f"Local state recorded for {snapshot_id} | "
             f"Clock: {self.vc.get_clock()}"
         )
-
-    # ====================================================
-    # SEND MESSAGE
-    # ====================================================
 
     def send_message(self, target_process, message, ports=None, hosts=None):
         if ports is None:
@@ -114,16 +105,12 @@ class ChandyLamportSnapshot:
 
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(3.0)
+            sock.settimeout(5.0)
             sock.connect((target_host, target_port))
-            sock.sendall(json.dumps(message).encode())
+            sock.sendall((json.dumps(message) + "\n").encode())
             sock.close()
         except Exception as e:
             print(f"Send Error from {self.process_name} to {target_process} ({target_host}:{target_port}): {e}")
-
-    # ====================================================
-    # INITIATE SNAPSHOT
-    # ====================================================
 
     def initiate_snapshot(self, snapshot_id, ports=None, hosts=None):
         if ports is None:
@@ -143,7 +130,6 @@ class ChandyLamportSnapshot:
         self.channel_state[snapshot_id] = {}
         self.channel_recording[snapshot_id] = {}
 
-        # Initiator records on all other incoming channels until markers arrive
         for neighbor in self.outgoing_neighbors:
             marker = {
                 "type": MARKER,
@@ -158,20 +144,11 @@ class ChandyLamportSnapshot:
                 f"Clock: {marker['clock']}"
             )
 
-    # ====================================================
-    # HANDLE INCOMING REGULAR MESSAGE (CHANNEL RECORDING)
-    # ====================================================
-
     def record_channel_message(self, sender, msg):
-        """Records messages that arrive on a channel while snapshot is active (in-transit)."""
         for snapshot_id, active in self.snapshot_active.items():
             if active and self.channel_recording.get(snapshot_id, {}).get(sender, False):
                 self.channel_state[snapshot_id].setdefault(sender, []).append(msg)
                 print(f"[CHANNEL RECORDING] {self.process_name} recorded in-transit message from {sender} for {snapshot_id}")
-
-    # ====================================================
-    # HANDLE MARKER
-    # ====================================================
 
     def handle_marker(self, msg, ports=None, hosts=None):
         if ports is None:
@@ -179,8 +156,9 @@ class ChandyLamportSnapshot:
         if hosts is None:
             hosts = self.hosts
 
-        snapshot_id = msg["snapshot_id"]
-        sender = msg["from"]
+        data = msg.get("data")
+        snapshot_id = msg.get("snapshot_id") or (data.get("snapshot_id") if isinstance(data, dict) else data) or "SNAPSHOT_1"
+        sender = msg.get("from", "?")
 
         self.vc.receive_event(msg["clock"])
 
@@ -192,15 +170,12 @@ class ChandyLamportSnapshot:
             self.channel_state[snapshot_id] = {sender: []}
             self.channel_recording[snapshot_id] = {}
 
-            # Channel along which marker arrived is recorded as empty
             self.record_local_state(snapshot_id)
 
-            # Start recording on all other incoming channels
             for inc in ["P0", "P1", "P2", "P3", "P4"]:
                 if inc != sender and inc != self.process_name:
                     self.channel_recording[snapshot_id][inc] = True
 
-            # Forward marker along all outgoing channels
             for neighbor in self.outgoing_neighbors:
                 marker = {
                     "type": MARKER,
@@ -215,17 +190,11 @@ class ChandyLamportSnapshot:
                     f"Clock: {marker['clock']}"
                 )
 
-            # Transmit recorded process state to coordinator
             self.send_state_to_coordinator(snapshot_id, ports, hosts)
         else:
-            # Subsequent marker on this channel: stop recording on this channel
             self.marker_received[snapshot_id].add(sender)
             self.channel_recording.get(snapshot_id, {})[sender] = False
             print(f"[SNAPSHOT] {self.process_name} stopped recording channel from {sender} for {snapshot_id}")
-
-    # ====================================================
-    # SEND STATE TO COORDINATOR
-    # ====================================================
 
     def send_state_to_coordinator(self, snapshot_id, ports=None, hosts=None):
         if ports is None:
@@ -249,15 +218,12 @@ class ChandyLamportSnapshot:
             f"Clock: {state_message['clock']}"
         )
 
-    # ====================================================
-    # HANDLE STATE MESSAGE (AT COORDINATOR)
-    # ====================================================
-
     def handle_state(self, msg, state_store):
-        snapshot_id = msg["snapshot_id"]
-        sender = msg["from"]
+        data = msg.get("data")
+        snapshot_id = msg.get("snapshot_id") or (data.get("snapshot_id") if isinstance(data, dict) else data) or "SNAPSHOT_1"
+        sender = msg.get("from", "UNKNOWN")
         state_store.setdefault(snapshot_id, {})
-        state_store[snapshot_id][sender] = msg["data"]
+        state_store[snapshot_id][sender] = data if isinstance(data, dict) else {"process": sender, "local_state": str(data)}
         if "channel_state" in msg and msg["channel_state"]:
             state_store[snapshot_id].setdefault("_channels", {})[sender] = msg["channel_state"]
         print(f"[STATE] Received state from {sender} for {snapshot_id}")

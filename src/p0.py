@@ -10,11 +10,11 @@ Responsibilities:
 3. Dispatches customer ORDER messages to P1 (Pizza Palace) and P2 (Burger Hub).
 4. Initiates Chandy-Lamport Global Snapshots (e.g. SNAPSHOT_1 and SNAPSHOT_2)
    by sending MARKER messages downstream to outgoing neighbors (P1, P2).
-5. Listens on Port 5000 (or fallback 5005) to collect STATE messages from all 5 processes.
+5. Listens on Port 5005 (with fallback) to collect STATE messages from all 5 processes.
 6. Evaluates and displays captured Global Snapshot states, performs causal
    consistency checks, and analyzes concurrent events.
 
-Wire format matches snapshot.py's send_message(): JSON over TCP, one object per connection.
+Wire format matches snapshot.py's send_message(): JSON over TCP, newline-compatible.
 """
 
 import argparse
@@ -41,7 +41,6 @@ OUTGOING_NEIGHBORS = ["P1", "P2"]
 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "config", "hosts.cfg")
 
-# Server control flag
 running = True
 server_socket = None
 
@@ -51,13 +50,13 @@ server_socket = None
 # ---------------------------------------------------------------------
 
 def load_ports(path=CONFIG_PATH):
-    """Reads the [ports] section of hosts.cfg -> {'P0': 5000, 'P1': 5001, ...}"""
+    """Reads the [ports] section of hosts.cfg -> {'P0': 5005, 'P1': 5001, ...}"""
     c = configparser.ConfigParser()
     if os.path.exists(path):
         c.read(path)
         if "ports" in c:
             return {k.split("_")[0].upper(): int(v) for k, v in c["ports"].items()}
-    return {"P0": 5000, "P1": 5001, "P2": 5002, "P3": 5003, "P4": 5004}
+    return {"P0": 5005, "P1": 5001, "P2": 5002, "P3": 5003, "P4": 5004}
 
 
 def load_hosts(path=CONFIG_PATH):
@@ -99,10 +98,7 @@ snapshot = ChandyLamportSnapshot(
     coordinator=COORDINATOR,
 )
 
-# Global store for collected snapshot states: {snapshot_id: {process_name: state_data}}
 state_store = {}
-
-# Store for active/completed orders
 orders_store = {}
 order_counter = 100
 
@@ -112,7 +108,6 @@ order_counter = 100
 # ---------------------------------------------------------------------
 
 def shutdown_handler(signum=None, frame=None):
-    """Handles Ctrl+C or termination signals gracefully."""
     global running, server_socket
     if not running:
         return
@@ -127,7 +122,6 @@ def shutdown_handler(signum=None, frame=None):
     sys.exit(0)
 
 
-# Register signal handlers
 signal.signal(signal.SIGINT, shutdown_handler)
 signal.signal(signal.SIGTERM, shutdown_handler)
 
@@ -145,9 +139,9 @@ def send_message(target_name, message):
         return False
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(3.0)
+        sock.settimeout(5.0)
         sock.connect((host, port))
-        sock.sendall(json.dumps(message).encode())
+        sock.sendall((json.dumps(message) + "\n").encode())
         sock.close()
         return True
     except Exception as e:
@@ -160,10 +154,6 @@ def send_message(target_name, message):
 # ---------------------------------------------------------------------
 
 def send_order(target_restaurant: str, item_name: str, order_id: int = None) -> int:
-    """
-    Creates and dispatches an ORDER message to a restaurant process (P1 or P2).
-    Advances P0's vector clock and transmits timestamped message.
-    """
     global order_counter
     if order_id is None:
         order_counter += 1
@@ -200,12 +190,6 @@ def send_order(target_restaurant: str, item_name: str, order_id: int = None) -> 
 
 
 def trigger_snapshot(snapshot_id: str):
-    """
-    Initiates Chandy-Lamport Global Snapshot from P0.
-    1. Records P0's local state and vector clock.
-    2. Broadcasts MARKER messages downstream to P1 and P2.
-    3. Saves P0's local state into state_store.
-    """
     print(f"\n{Fore.MAGENTA}{'='*60}")
     print(f"[SNAPSHOT INITIATION] P0 triggering {snapshot_id}")
     print(f"{'='*60}{Style.RESET_ALL}")
@@ -225,24 +209,21 @@ def trigger_snapshot(snapshot_id: str):
 
 
 def check_snapshot_consistency(snapshot_id: str):
-    """
-    Evaluates the causal consistency of the captured global snapshot.
-    Verifies vector clock relations across all collected process states.
-    """
     snaps = state_store.get(snapshot_id, {})
     print(f"\n{Fore.CYAN}--- Global Snapshot Report: {snapshot_id} ---{Style.RESET_ALL}")
     print(f"{'Process':<10} {'Recorded Vector Clock':<25} {'Local State Summary'}")
     print(f"{'-'*65}")
-    for p_name in sorted(snaps.keys()):
+    for p_name in sorted([k for k in snaps.keys() if not k.startswith("_")]):
         p_data = snaps[p_name]
-        clock_str = str(p_data.get("vector_clock", []))
+        clock_val = p_data.get("vector_clock", [])
+        clock_str = str(clock_val)
         local_st = p_data.get("local_state", "")
         if isinstance(local_st, dict):
             local_st = f"Active Orders: {len(local_st.get('active_orders', []))}"
         print(f"{p_name:<10} {clock_str:<25} {str(local_st)[:30]}")
 
     inconsistencies = []
-    p_names = list(snaps.keys())
+    p_names = [k for k in snaps.keys() if not k.startswith("_")]
     for i in range(len(p_names)):
         for j in range(i + 1, len(p_names)):
             p_a, p_b = p_names[i], p_names[j]
@@ -265,7 +246,6 @@ def check_snapshot_consistency(snapshot_id: str):
 
 
 def analyze_concurrency(proc_a="P1", proc_b="P2", snapshot_id=None):
-    """Compares the vector clocks of two processes to verify concurrency."""
     if snapshot_id and snapshot_id in state_store:
         clock_a = state_store[snapshot_id].get(proc_a, {}).get("vector_clock")
         clock_b = state_store[snapshot_id].get(proc_b, {}).get("vector_clock")
@@ -289,35 +269,34 @@ def analyze_concurrency(proc_a="P1", proc_b="P2", snapshot_id=None):
 # ---------------------------------------------------------------------
 
 def dispatch(msg):
-    """Routes incoming messages by type."""
     mtype = msg.get("type")
     sender = msg.get("from", "UNKNOWN")
 
     if mtype == "STATE":
-        snapshot_id = msg.get("snapshot_id")
+        data = msg.get("data")
+        snapshot_id = msg.get("snapshot_id") or (data.get("snapshot_id") if isinstance(data, dict) else data) or "SNAPSHOT_1"
         if "clock" in msg:
             vc.receive_event(msg["clock"])
         
         snapshot.handle_state(msg, state_store)
         
-        collected_count = len(state_store.get(snapshot_id, {}))
+        collected_procs = [k for k in state_store.get(snapshot_id, {}).keys() if not k.startswith("_")]
+        collected_count = len(collected_procs)
         print(
             f"{Fore.CYAN}[STATE RECEIVED] {sender} → P0 for {snapshot_id} | "
-            f"Progress: {collected_count}/{NUM_PROCESSES} processes recorded{Style.RESET_ALL}"
+            f"Progress: {collected_count}/{NUM_PROCESSES} processes recorded ({', '.join(sorted(collected_procs))}){Style.RESET_ALL}"
         )
 
         if collected_count == NUM_PROCESSES:
             print(f"{Fore.GREEN}★ All {NUM_PROCESSES} process states collected for {snapshot_id}!{Style.RESET_ALL}")
             check_snapshot_consistency(snapshot_id)
 
-    elif mtype == "DELIVERY_COMPLETE" or mtype == "ORDER_DELIVERED":
+    elif mtype in ["DELIVERY", "DELIVERY_COMPLETE", "ORDER_DELIVERED"]:
         if "clock" in msg:
             vc.receive_event(msg["clock"])
-        order_id = msg.get("payload", {}).get("order_id")
-        if order_id in orders_store:
-            orders_store[order_id]["status"] = "DELIVERED"
-        vc.internal_event(f"Order #{order_id} delivery confirmed from {sender}")
-        print(f"{Fore.GREEN}[DELIVERY COMPLETE] Order #{order_id} fulfilled via {sender}!{Style.RESET_ALL}")
+        data_text = str(msg.get("data") or msg.get("payload") or "")
+        vc.internal_event(f"Delivery confirmation received from {sender}: {data_text}")
+        print(f"{Fore.GREEN}[DELIVERY COMPLETE] Order fulfilled via {sender}: {data_text}{Style.RESET_ALL}")
 
     elif mtype == "MARKER":
         snapshot.handle_marker(msg, PORTS, HOSTS)
@@ -329,27 +308,34 @@ def dispatch(msg):
 
 
 def handle_conn(conn):
-    """Reads full payload from a client connection and dispatches."""
     data = b""
     with conn:
-        while True:
-            chunk = conn.recv(4096)
+        while running:
+            try:
+                chunk = conn.recv(4096)
+            except (ConnectionResetError, OSError):
+                break
             if not chunk:
                 break
             data += chunk
-    if data:
-        try:
-            msg = json.loads(data.decode())
-            dispatch(msg)
-        except json.JSONDecodeError as e:
-            print(f"[{PROCESS_NAME}] Bad JSON received: {e}")
+            while b"\n" in data:
+                line, data = data.split(b"\n", 1)
+                if not line.strip():
+                    continue
+                try:
+                    msg = json.loads(line.decode())
+                    dispatch(msg)
+                except json.JSONDecodeError:
+                    pass
+        if data.strip():
+            try:
+                msg = json.loads(data.decode())
+                dispatch(msg)
+            except json.JSONDecodeError:
+                pass
 
 
 def start_listener(port, auto_fallback=True):
-    """
-    Starts TCP listener on specified port.
-    If port 5000 is occupied by macOS AirPlay, automatically falls back to port 5005.
-    """
     global server_socket
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -391,11 +377,11 @@ def start_listener(port, auto_fallback=True):
 
 def run_automated_flow():
     """
-    Executes the complete scenario:
+    Executes the complete scenario across all 5 processes:
     1. P0 dispatches Order #101 to P1 (Pizza Palace).
     2. P0 dispatches Order #102 to P2 (Burger Hub).
     3. Triggers SNAPSHOT_1 while orders are being prepared / processed in parallel.
-    4. Waits for downstream food prep & delivery.
+    4. Waits for downstream food prep & delivery by P3 and P4.
     5. Triggers SNAPSHOT_2 after completion to capture final global cut.
     """
     print(f"\n{Fore.MAGENTA}=======================================================")
@@ -416,12 +402,12 @@ def run_automated_flow():
     # Step 3: Trigger Snapshot 1 (mid-execution cut)
     print(f"\n{Fore.YELLOW}[STEP 3] Triggering SNAPSHOT_1 during concurrent order processing...{Style.RESET_ALL}")
     trigger_snapshot("SNAPSHOT_1")
-    time.sleep(3.0)
+    time.sleep(4.0)
 
     # Step 4: Trigger Snapshot 2 (post-delivery cut)
     print(f"\n{Fore.YELLOW}[STEP 4] Triggering SNAPSHOT_2 post order workflow...{Style.RESET_ALL}")
     trigger_snapshot("SNAPSHOT_2")
-    time.sleep(3.0)
+    time.sleep(4.0)
 
     print(f"\n{Fore.MAGENTA}=======================================================")
     print(f"  AUTOMATED WORKFLOW COMPLETED — P0 READY")
@@ -433,7 +419,6 @@ def run_automated_flow():
 # ---------------------------------------------------------------------
 
 def interactive_menu():
-    """Provides interactive control panel for demo and testing."""
     while running:
         try:
             print(f"\n{Fore.CYAN}=== P0 Central Order Processor Menu ==={Style.RESET_ALL}")
