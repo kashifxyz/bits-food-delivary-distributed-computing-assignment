@@ -1,166 +1,231 @@
 """
-P3 - Delivery Partner 1 (Fleet Runner A)
-Runs on Node 3 (slave2).
+p3.py - P3 : Delivery Partner 1 (Fleet Runner A)
+--------------------------------------------------
+Role:
+    - Receives a DELIVERY handoff message from P1 (Restaurant A - Pizza Palace)
+      for Order #1.
+    - Runs 3 internal events: Order picked up -> In transit -> Order delivered.
+    - Sends a DELIVERY confirmation back to P0 once delivered.
+    - Participates in the Chandy-Lamport snapshot algorithm: on receiving a
+      MARKER (forwarded to it by P1), records its local state and sends a
+      STATE message back to P0. P3 is a leaf node in the flow
+      (P0 -> P1 -> P3), so it does not forward the marker any further.
 
-Responsibilities:
-- Receive an ORDER message from P1 (Restaurant A).
-- Perform the delivery lifecycle as internal events:
-      Order picked up -> In transit -> Order delivered
-- Notify P0 that the order has been delivered.
-- Participate in the Chandy-Lamport snapshot algorithm: on receiving a
-  MARKER from P0, record local state and send it back to P0 as a STATE
-  message (P3 is a leaf process, so there is nothing to forward to).
+Run:
+    python p3.py
 """
 
-import json
 import socket
 import threading
+import json
 import time
+from colorama import Fore, Style, init
 
 from vector_clock import VectorClock
 
-PROCESS_NAME = "P3"
+init(autoreset=True)
+
+# ----------------------------------------------------------------------
+# Identity / config
+# ----------------------------------------------------------------------
 PROCESS_ID = 3
-NUM_PROCESSES = 5
+PROCESS_NAME = "P3"
+UPSTREAM_RESTAURANT = "P1"          # Order handoff arrives from this process
+FLEET_NAME = "Fleet Runner A"
 
-# Update the IP addresses below to the actual Prayogshala node IPs when
-# deploying across nodes. Defaults to localhost for local testing, where
-# all processes run on the same machine on different ports.
-NODE_IP = {
-    "P0": "localhost",  # Node 1 (master)
-    "P1": "localhost",  # Node 2 (slave1)
-    "P2": "localhost",  # Node 2 (slave1)
-    "P3": "localhost",  # Node 3 (slave2)
-    "P4": "localhost",  # Node 3 (slave2)
+LISTEN_HOST = "0.0.0.0"             # bind on all interfaces (Node 3 - slave2)
+LISTEN_PORT = 5003
+
+NODES = {
+    "P0": {"host": "127.0.0.1", "port": 5000},
+    "P1": {"host": "127.0.0.1", "port": 5001},
+    "P2": {"host": "127.0.0.1", "port": 5002},
+    "P3": {"host": "127.0.0.1", "port": 5003},
+    "P4": {"host": "127.0.0.1", "port": 5004},
 }
 
-PORTS = {
-    "P0": 5000,
-    "P1": 5001,
-    "P2": 5002,
-    "P3": 5003,
-    "P4": 5004,
-}
+vc = VectorClock(process_id=PROCESS_ID, num_processes=5)
 
-HOST = "0.0.0.0"
+# ----------------------------------------------------------------------
+# Local mutable state (guarded by locks since it's touched from multiple
+# connection-handler threads)
+# ----------------------------------------------------------------------
+state_lock = threading.Lock()
+order_status = "WAITING_FOR_ORDER"
+current_order_label = None
 
-vc = VectorClock(PROCESS_ID, NUM_PROCESSES)
+snap_lock = threading.Lock()
+recorded_snapshots = {}  # snapshot_id -> True once this process has recorded
 
-# --- Chandy-Lamport snapshot state ---
-snapshot_lock = threading.Lock()
-snapshot_in_progress = False
-recorded_state = None
+def log_send(target, label, clock):
+    print(f"{Fore.GREEN}[SEND] {PROCESS_NAME} → {target} | {label} | Clock: {clock}{Style.RESET_ALL}")
 
 
-def send_message(target: str, msg_type: str, data, clock: list) -> None:
-    """Send a JSON message to the target process over a TCP socket."""
-    message = {
-        "type": msg_type,
-        "data": data,
-        "clock": clock,
-        "from": PROCESS_NAME,
-    }
+def log_recv(source, label, clock):
+    print(f"{Fore.CYAN}[RECV] {PROCESS_NAME} ← {source} | {label} | Clock: {clock}{Style.RESET_ALL}")
+
+
+def log_snapshot(label, clock):
+    print(f"{Fore.MAGENTA}[SNAPSHOT] {PROCESS_NAME} | {label} | Clock: {clock}{Style.RESET_ALL}")
+
+
+def log_error(msg):
+    print(f"{Fore.RED}[ERROR] {PROCESS_NAME} | {msg}{Style.RESET_ALL}")
+
+
+# ----------------------------------------------------------------------
+# Networking
+# ----------------------------------------------------------------------
+def send_message(target_name, msg_type, data, clock):
+    """Open a short-lived TCP connection, send one newline-delimited JSON
+    message, then close. Simple request/response style suitable for the
+    assignment's message volume."""
+    node = NODES[target_name]
+    message = {"type": msg_type, "data": data, "clock": clock, "from": PROCESS_NAME}
     try:
-        with socket.create_connection((NODE_IP[target], PORTS[target]), timeout=5) as s:
-            s.sendall(json.dumps(message).encode())
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(10)
+            s.connect((node["host"], node["port"]))
+            s.sendall((json.dumps(message) + "\n").encode("utf-8"))
     except Exception as e:
-        print(f"[ERROR] {PROCESS_NAME} could not send message to {target}: {e}")
+        log_error(f"failed to send {msg_type} to {target_name}: {e}")
 
 
-def handle_order(msg: dict) -> None:
-    """Process an incoming order from P1 and run it through the delivery lifecycle."""
-    order_data = msg["data"]
-    clock = vc.receive_event(msg["clock"])
-    print(f"[RECV] {PROCESS_NAME} \u2190 {msg['from']} | {order_data} | Clock: {clock}")
-
-    # --- Delivery lifecycle: internal events ---
-    time.sleep(1)
-    clock = vc.internal_event(f"Order picked up | {order_data}")
-    print(f"[INTERNAL] {PROCESS_NAME} | Order picked up | {order_data} | Clock: {clock}")
-
-    time.sleep(1)
-    clock = vc.internal_event(f"In transit | {order_data}")
-    print(f"[INTERNAL] {PROCESS_NAME} | In transit | {order_data} | Clock: {clock}")
-
-    time.sleep(1)
-    clock = vc.internal_event(f"Order delivered | {order_data}")
-    print(f"[INTERNAL] {PROCESS_NAME} | Order delivered | {order_data} | Clock: {clock}")
-
-    # --- Notify P0 that delivery is complete ---
-    clock = vc.send_event()
-    delivery_msg = f"{order_data} delivered by {PROCESS_NAME}"
-    send_message("P0", "DELIVERY", delivery_msg, clock)
-    print(f"[SEND] {PROCESS_NAME} \u2192 P0 | {delivery_msg} | Clock: {clock}")
-
-
-def handle_marker(msg: dict) -> None:
-    """Chandy-Lamport: record local state on first marker and report it to P0."""
-    global snapshot_in_progress, recorded_state
-
-    with snapshot_lock:
-        if snapshot_in_progress:
-            print(f"[SNAPSHOT] {PROCESS_NAME} | Duplicate marker ignored | Clock: {vc.get_clock()}")
-            return
-
-        snapshot_in_progress = True
-        recorded_state = vc.get_clock()
-        print(f"[SNAPSHOT] {PROCESS_NAME} | Local state recorded | Clock: {recorded_state}")
-
-    # P3 has no downstream process to forward the marker to (leaf process),
-    # so just report the recorded state back to P0.
-    clock = vc.send_event()
-    send_message(
-        "P0",
-        "STATE",
-        {"process": PROCESS_NAME, "local_state": recorded_state},
-        clock,
-    )
-    print(f"[SEND] {PROCESS_NAME} \u2192 P0 | STATE reported: {recorded_state} | Clock: {clock}")
-
-    with snapshot_lock:
-        snapshot_in_progress = False
-        recorded_state = None
-
-
-def handle_client(conn: socket.socket, addr) -> None:
-    try:
-        data = b""
-        while True:
-            chunk = conn.recv(4096)
-            if not chunk:
-                break
-            data += chunk
-        if not data:
-            return
-
-        msg = json.loads(data.decode())
-        msg_type = msg.get("type")
-
-        if msg_type == "ORDER":
-            handle_order(msg)
-        elif msg_type == "MARKER":
-            handle_marker(msg)
-        else:
-            print(f"[WARN] {PROCESS_NAME} received unknown message type: {msg_type}")
-    except Exception as e:
-        print(f"[ERROR] {PROCESS_NAME} failed to handle message from {addr}: {e}")
-    finally:
-        conn.close()
-
-
-def start_server() -> None:
+def start_server():
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server.bind((HOST, PORTS[PROCESS_NAME]))
-    server.listen(5)
-    print(f"{PROCESS_NAME} (Delivery Partner 1 - Fleet Runner A) listening on port {PORTS[PROCESS_NAME]}...")
-
+    server.bind((LISTEN_HOST, LISTEN_PORT))
+    server.listen(20)
+    print(f"{Fore.BLUE}{PROCESS_NAME} ({FLEET_NAME}) listening on port {LISTEN_PORT}...{Style.RESET_ALL}")
     while True:
         conn, addr = server.accept()
-        threading.Thread(target=handle_client, args=(conn, addr), daemon=True).start()
+        threading.Thread(target=handle_connection, args=(conn,), daemon=True).start()
 
 
+def handle_connection(conn):
+    with conn:
+        buffer = b""
+        while True:
+            try:
+                chunk = conn.recv(4096)
+            except ConnectionResetError:
+                break
+            if not chunk:
+                break
+            buffer += chunk
+            while b"\n" in buffer:
+                line, buffer = buffer.split(b"\n", 1)
+                if not line.strip():
+                    continue
+                try:
+                    msg = json.loads(line.decode("utf-8"))
+                except json.JSONDecodeError:
+                    log_error(f"received malformed JSON: {line!r}")
+                    continue
+                dispatch(msg)
+
+
+def dispatch(msg):
+    mtype = msg.get("type")
+    if mtype == "DELIVERY":
+        handle_delivery_handoff(msg)
+    elif mtype == "MARKER":
+        handle_marker(msg)
+    else:
+        log_error(f"unexpected message type '{mtype}' from {msg.get('from')}")
+
+
+# ----------------------------------------------------------------------
+# Order handling
+# ----------------------------------------------------------------------
+def handle_delivery_handoff(msg):
+    """Triggered when P1 hands off a cooked order to this delivery partner."""
+    global order_status, current_order_label
+
+    order_label = msg.get("data", "Order")
+    source = msg.get("from", "?")
+
+    clock = vc.receive_event(msg.get("clock", vc.get_clock()))
+    log_recv(source, f"{order_label} handed off for delivery", clock)
+
+    with state_lock:
+        order_status = "RECEIVED_FROM_RESTAURANT"
+        current_order_label = order_label
+
+    threading.Thread(target=process_delivery, args=(order_label, source), daemon=True).start()
+
+
+def process_delivery(order_label, restaurant):
+    """Order picked up -> In transit -> Order delivered, then notify P0."""
+    global order_status
+
+    with state_lock:
+        order_status = "PICKED_UP"
+    vc.internal_event(f"{order_label} picked up from {restaurant}")
+    time.sleep(1)
+
+    with state_lock:
+        order_status = "IN_TRANSIT"
+    vc.internal_event(f"{order_label} in transit ({FLEET_NAME})")
+    time.sleep(1)
+
+    with state_lock:
+        order_status = "DELIVERED"
+    vc.internal_event(f"{order_label} delivered to customer")
+    time.sleep(0.5)
+
+    clock = vc.send_event()
+    label = f"{order_label} delivered by {PROCESS_NAME} ({FLEET_NAME})"
+    log_send("P0", label, clock)
+    send_message("P0", "DELIVERY", label, clock)
+
+
+# ----------------------------------------------------------------------
+# Chandy-Lamport snapshot participation
+# ----------------------------------------------------------------------
+def handle_marker(msg):
+    """P1 forwards the MARKER it received from P0 downstream to P3.
+    P3 records its local state (first marker) and reports STATE back to P0.
+    P3 has no further downstream process, so the marker is not forwarded
+    any further."""
+    source = msg.get("from", "?")
+    data = msg.get("data")
+    snapshot_id = data.get("snapshot_id") if isinstance(data, dict) else data
+
+    clock = vc.receive_event(msg.get("clock", vc.get_clock()))
+    log_recv(source, f"MARKER for {snapshot_id}", clock)
+
+    with snap_lock:
+        already_recorded = snapshot_id in recorded_snapshots
+        if not already_recorded:
+            recorded_snapshots[snapshot_id] = True
+
+    if already_recorded:
+        # A duplicate marker on an already-recorded snapshot just means the
+        # incoming channel is now empty; nothing new to record or send.
+        log_snapshot(f"{snapshot_id} channel {source}->{PROCESS_NAME} closed (duplicate marker)", vc.get_clock())
+        return
+
+    with state_lock:
+        snapshot_state = {
+            "process": PROCESS_NAME,
+            "role": FLEET_NAME,
+            "snapshot_id": snapshot_id,
+            "vector_clock": vc.get_clock(),
+            "order_status": order_status,
+            "current_order": current_order_label,
+            "incoming_channel_state": f"{source}->{PROCESS_NAME}: recorded empty on marker receipt",
+        }
+
+    log_snapshot(f"{snapshot_id} local state recorded (order_status={snapshot_state['order_status']})",
+                 snapshot_state["vector_clock"])
+
+    state_clock = vc.send_event()
+    log_send("P0", f"STATE for {snapshot_id}", state_clock)
+    send_message("P0", "STATE", snapshot_state, state_clock)
+
+
+# ----------------------------------------------------------------------
 if __name__ == "__main__":
+    print(f"{Fore.BLUE}=== {PROCESS_NAME} : Delivery Partner 1 ({FLEET_NAME}) starting up ==={Style.RESET_ALL}")
     start_server()
-
-
