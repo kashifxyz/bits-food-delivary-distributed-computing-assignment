@@ -1,5 +1,16 @@
+import sys
 import threading
 from colorama import Fore, Style, init
+
+# Windows consoles default to a non-UTF-8 codepage (e.g. cp1252), which
+# crashes on the unicode symbols (✓, ★, →, etc.) printed across this project.
+for _stream_name in ("stdout", "stderr"):
+    _stream = getattr(sys, _stream_name)
+    if hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
 
 init(autoreset=True)
 
