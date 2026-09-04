@@ -311,11 +311,14 @@ The test suite validates all requirements specified in the assignment:
 
 ### Running the Test Suite
 ```bash
-# Run Vector Clock Unit Tests
+# Run Vector Clock Unit Tests (9 Tests)
 python tests/test_vector_clock.py
 
-# Run Socket Integration & Snapshot Tests
+# Run Socket Integration & Snapshot Unit Tests
 python tests/test_p0_integration.py
+
+# Run End-to-End Multi-Process 5-Node Verification
+python tests/test_full_system.py
 ```
 
 ---
@@ -340,7 +343,19 @@ When demonstrating this project to the evaluator:
 
 ---
 
-## 10. Team Member Contribution Table
+## 10. Deep-Dive Documentation Index
+
+For exhaustive theoretical derivations, proofs, state machines, and cloud guides, refer to the documentation in `/docs`:
+
+* 🏛️ **[System Architecture & Event Specification](docs/ARCHITECTURE.md)**: Process state machines, wire protocols, and event transition models.
+* ⏱️ **[Vector Clocks & Causality Theory](docs/VECTOR_CLOCKS.md)**: Formal mathematical definitions, merge rules, and concurrency proofs ($P1 \parallel P2$).
+* 📸 **[Chandy-Lamport Snapshot & Consistency](docs/CHANDY_LAMPORT.md)**: Marker propagation rules, in-transit channel recording, and consistency equations ($V_i[j] \le V_j[j]$).
+* ☁️ **[Prayogshala Multi-Node Deployment Guide](docs/DEPLOYMENT_GUIDE.md)**: Step-by-step VM setup, SSH workflow, network port rules, and troubleshooting.
+* 🐛 **[Bug Audit & Resolution Report](BUG-REPORTS.md)**: Complete log of 10 audited bugs and applied fixes.
+
+---
+
+## 11. Team Member Contribution Table
 
 | Member Name | Student ID *(Placeholder)* | Role / Assigned Component | Key Contributions |
 |---|---|---|---|
@@ -352,9 +367,9 @@ When demonstrating this project to the evaluator:
 
 ---
 
-## 11. References & Bug Audit Log
+## 12. References & Academic Attribution
 
-* For complete details on the code audit, edge-case fixes, and socket reliability improvements, see [BUG-REPORTS.md](file:///Users/kashif/codemill/bits/bits-food-delivary-distributed-computing-assignment/BUG-REPORTS.md).
 * **Distributed Computing Principles**:
   * K. Mani Chandy and Leslie Lamport, *"Distributed Snapshots: Determining Global States of Distributed Systems"*, ACM Transactions on Computer Systems (TOCS), 1985.
   * Colin Fidge, *"Timestamps in Message-Ordering Systems"*, Proceedings of the 11th Australian Computer Science Conference, 1988.
+  * Friedemann Mattern, *"Virtual Time and Global States of Distributed Systems"*, Parallel and Distributed Algorithms, 1989.
