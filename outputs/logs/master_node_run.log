@@ -1,0 +1,104 @@
+s2025mt03510@ip-10-3-25-219:~/workspace/bits-food-delivery$ python3 src/p0.py --auto
+
+=======================================================
+ [P0] Central Order Processor listening on port 5005
+ Hosts: {'P0': '127.0.0.1', 'P1': '127.0.0.1', 'P2': '127.0.0.1', 'P3': '127.0.0.1', 'P4': '127.0.0.1'}
+ Initial Clock: [0, 0, 0, 0, 0]
+=======================================================
+
+
+=======================================================
+  STARTING P0 AUTOMATED DISTRIBUTED WORKFLOW
+=======================================================
+
+[STEP 1] Dispatching Order #101 to P1 (Pizza Palace)...
+[INTERNAL] P0 | Created Customer Order #101 for Margherita Pizza | Clock: [1, 0, 0, 0, 0]
+[SEND] P0 | Clock: [2, 0, 0, 0, 0]
+[P0 Central Processor] DISPATCH ORDER #101 (Margherita Pizza) → P1 | Clock: [2, 0, 0, 0, 0]
+
+[STEP 2] Dispatching Order #102 to P2 (Burger Hub)...
+[INTERNAL] P0 | Created Customer Order #102 for Double Cheeseburger | Clock: [3, 0, 0, 0, 0]
+[SEND] P0 | Clock: [4, 0, 0, 0, 0]
+[P0 Central Processor] DISPATCH ORDER #102 (Double Cheeseburger) → P2 | Clock: [4, 0, 0, 0, 0]
+
+[STEP 3] Triggering SNAPSHOT_1 during concurrent order processing...
+
+============================================================
+[SNAPSHOT INITIATION] P0 triggering SNAPSHOT_1
+============================================================
+[SNAPSHOT] P0 | SNAPSHOT_1 triggered | Clock: [4, 0, 0, 0, 0]
+[SEND] P0 | Clock: [5, 0, 0, 0, 0]
+[MARKER] P0 -> P1 | SNAPSHOT_1
+[MARKER] P0 -> P2 | SNAPSHOT_1
+[RECV] P0 | Clock: [6, 8, 0, 0, 0]
+[STATE RECEIVED] P1 -> P0 | SNAPSHOT_1
+[STATE RECEIVED] P1 → P0 for SNAPSHOT_1 | Progress: 2/5 processes recorded (P0, P1)
+[RECV] P0 | Clock: [7, 8, 6, 0, 0]
+[STATE RECEIVED] P2 -> P0 | SNAPSHOT_1[RECV] P0 | Clock: [8, 8, 6, 4, 0]
+
+[STATE RECEIVED] P3 -> P0 | SNAPSHOT_1
+[STATE RECEIVED] P3 → P0 for SNAPSHOT_1 | Progress: 4/5 processes recorded (P0, P1, P2, P3)
+[STATE RECEIVED] P2 → P0 for SNAPSHOT_1 | Progress: 4/5 processes recorded (P0, P1, P2, P3)
+[RECV] P0 | Clock: [9, 8, 6, 4, 2]
+[STATE RECEIVED] P4 -> P0 | SNAPSHOT_1
+[STATE RECEIVED] P4 → P0 for SNAPSHOT_1 | Progress: 5/5 processes recorded (P0, P1, P2, P3, P4)
+★ All 5 process states collected for SNAPSHOT_1!
+
+--- Global Snapshot Report: SNAPSHOT_1 ---
+Process    Recorded Vector Clock     Local State Summary
+-----------------------------------------------------------------
+P0         [5, 0, 0, 0, 0]           Active Orders: 2
+P1         [5, 7, 0, 0, 0]           Active Orders: 0
+P2         [5, 0, 5, 0, 0]           Active Orders: 0
+P3         [5, 7, 0, 4, 0]           Status: PICKED_UP, Order: Orde
+P4         [5, 0, 5, 0, 2]           Status: WAITING_FOR_ORDER, Ord
+
+✓ Global Snapshot SNAPSHOT_1 is CAUSALLY CONSISTENT! (No orphan or future dependencies)
+
+[RECV] P0 | Clock: [10, 8, 6, 7, 2]
+[INTERNAL] P0 | Delivery confirmation received from P3: Order #101 (Margherita Pizza) delivered by P3 (Fleet Runner A) | Clock: [11, 8, 6, 7, 2]
+[DELIVERY COMPLETE] Order fulfilled via P3: Order #101 (Margherita Pizza) delivered by P3 (Fleet Runner A)
+[RECV] P0 | Clock: [12, 8, 8, 7, 7]
+[INTERNAL] P0 | Delivery confirmation received from P4: Order #102 (Double Cheeseburger) delivered by P4 (Fleet Runner B) | Clock: [13, 8, 8, 7, 7]
+[DELIVERY COMPLETE] Order fulfilled via P4: Order #102 (Double Cheeseburger) delivered by P4 (Fleet Runner B)
+
+[STEP 4] Triggering SNAPSHOT_2 post order workflow...
+
+============================================================
+[SNAPSHOT INITIATION] P0 triggering SNAPSHOT_2
+============================================================
+[SNAPSHOT] P0 | SNAPSHOT_2 triggered | Clock: [13, 8, 8, 7, 7]
+[SEND] P0 | Clock: [14, 8, 8, 7, 7]
+[MARKER] P0 -> P1 | SNAPSHOT_2
+[MARKER] P0 -> P2 | SNAPSHOT_2
+[RECV] P0 | Clock: [15, 11, 8, 7, 7]
+[STATE RECEIVED] P1 -> P0 | SNAPSHOT_2
+[STATE RECEIVED] P1 → P0 for SNAPSHOT_2 | Progress: 2/5 processes recorded (P0, P1)
+[RECV] P0 | Clock: [16, 11, 11, 7, 7]
+[STATE RECEIVED] P2 -> P0 | SNAPSHOT_2
+[STATE RECEIVED] P2 → P0 for SNAPSHOT_2 | Progress: 3/5 processes recorded (P0, P1, P2)
+[RECV] P0 | Clock: [17, 11, 11, 9, 7]
+[STATE RECEIVED] P3 -> P0 | SNAPSHOT_2
+[STATE RECEIVED] P3 → P0 for SNAPSHOT_2 | Progress: 4/5 processes recorded (P0, P1, P2, P3)
+[RECV] P0 | Clock: [18, 11, 11, 9, 9]
+[STATE RECEIVED] P4 -> P0 | SNAPSHOT_2
+[STATE RECEIVED] P4 → P0 for SNAPSHOT_2 | Progress: 5/5 processes recorded (P0, P1, P2, P3, P4)
+★ All 5 process states collected for SNAPSHOT_2!
+
+--- Global Snapshot Report: SNAPSHOT_2 ---
+Process    Recorded Vector Clock     Local State Summary
+-----------------------------------------------------------------
+P0         [14, 8, 8, 7, 7]          Active Orders: 2
+P1         [14, 10, 8, 7, 7]         Active Orders: 0
+P2         [14, 8, 10, 7, 7]         Active Orders: 0
+P3         [14, 10, 8, 9, 7]         Status: DELIVERED, Order: Orde
+P4         [14, 8, 10, 7, 9]         Status: DELIVERED, Order: Orde
+
+✓ Global Snapshot SNAPSHOT_2 is CAUSALLY CONSISTENT! (No orphan or future dependencies)
+
+
+=======================================================
+  AUTOMATED WORKFLOW COMPLETED — P0 READY
+=======================================================
+
+s2025mt03510@ip-10-3-25-219:~/workspace/bits-food-delivery$
